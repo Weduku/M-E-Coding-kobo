@@ -67,7 +67,7 @@ pre{background:var(--bg);padding:.8rem;border-radius:6px;overflow:auto;max-heigh
 
 <section id="outSec" hidden>
 <h2>4. Create the new XML files</h2>
-<p class="hint">Every file gets the new form ID and version plus a fresh random instanceID, so nothing is flagged as a duplicate.</p>
+<p class="hint">Files keep the name of the original submission (XML uploads) or its <code>_uuid</code> (CSV/XLSX exports); the prefix below is used only when neither exists. Every file gets the new form ID and version plus a fresh random instanceID, so nothing is flagged as a duplicate.</p>
 <div class="row">
 <input type="text" id="prefix" value="submission" aria-label="File name prefix">
 <button id="go">Download ZIP of XML files</button>
@@ -91,7 +91,7 @@ function parseXml(t){const d=new DOMParser().parseFromString(t,'text/xml');if(d.
 function loadTemplate(txt){
   T=parseXml(txt);tleaves=[];tgroups={};
   (function w(n,p){const c={};n.kids.forEach(k=>c[k.name]=(c[k.name]||0)+1);
-    n.kids.forEach(k=>{const q=p?p+'/'+k.name:k.name;if(PROT(q))return;
+    n.kids.forEach(k=>{const ln=k.name.split(':').pop(),q=p?p+'/'+ln:ln;if(PROT(q))return;
       if(k.kids.length){tgroups[q]=Math.max(tgroups[q]||0,c[k.name]);w(k,q)}else tleaves.push(q)})})(T,'');
   tleaves=[...new Set(tleaves)];
   const at=Object.fromEntries(T.attrs);
@@ -104,11 +104,11 @@ function rowToTree(row){const root={name:'root',kids:[],text:''};
     if(v===''||v==null)continue;let cur=root;
     h.split('/').forEach(s=>{let k=cur.kids.find(x=>x.name===s);if(!k){k={name:s,kids:[],text:''};cur.kids.push(k)}cur=k});
     cur.text=v instanceof Date?(isNaN(v)?'':(v.toISOString().endsWith('T00:00:00.000Z')?v.toISOString().slice(0,10):v.toISOString())):String(v).trim()}
-  return root}
+  root.fname=row._uuid?String(row._uuid).trim():'';return root}
 
 async function loadOld(files){
   OLD=[];oldPaths=new Set();oldRep=new Set();const errs=[];
-  const addXml=(t,n)=>{try{const r=parseXml(t);OLD.push(r);scanRep(r);leafPaths(r,'')}catch(e){errs.push(n+': '+e.message)}};
+  const addXml=(t,n)=>{try{const r=parseXml(t);r.fname=String(n).split(/[\\/]/).pop();OLD.push(r);scanRep(r);leafPaths(r,'')}catch(e){errs.push(n+': '+e.message)}};
   for(const f of files){const ext=f.name.split('.').pop().toLowerCase();
     try{
       if(ext==='xml')addXml(await f.text(),f.name);
@@ -144,8 +144,9 @@ function oldRP(g){const ps=tleaves.filter(t=>t.startsWith(g+'/')&&map[t]).map(t=
 function copy(n,i){const p=' '.repeat(i);return n.kids.length?`${p}<${n.name}>\n${n.kids.map(k=>copy(k,i+2)).join('')}${p}</${n.name}>\n`:`${p}<${n.name}>${esc(n.text)}</${n.name}>\n`}
 function build(tn,ctx,cp,tp,ind){let out='';const seen=new Set(),pad=' '.repeat(ind);
   for(const k of tn.kids){if(seen.has(k.name))continue;seen.add(k.name);
-    const q=tp?tp+'/'+k.name:k.name;
-    if(q==='meta'){out+=`${pad}<meta>\n${pad}  <instanceID>${newId()}</instanceID>\n${pad}</meta>\n`;continue}
+    const ln=k.name.split(':').pop(),q=tp?tp+'/'+ln:ln;
+    if(q==='meta'){const ik=k.kids.find(x=>x.name.split(':').pop()==='instanceID'),iname=ik?ik.name:'instanceID';
+      out+=`${pad}<${k.name}>\n${pad}  <${iname}>${newId()}</${iname}>\n${pad}</${k.name}>\n`;continue}
     if(PROT(q)){out+=copy(k,ind);continue}
     if(k.kids.length){
       if(repeats.has(q)){const rp=oldRP(q);const inst=rp?findAll(ctx,rel(rp,cp)):[ctx];
@@ -157,19 +158,25 @@ function build(tn,ctx,cp,tp,ind){let out='';const seen=new Set(),pad=' '.repeat(
 function record(old){
   const a=T.attrs.map(([k,v])=>` ${k}="${esc(v)}"`).join('');
   let body=build(T,old,'','',2);
-  if(!T.kids.some(k=>k.name==='meta'))body+=`  <meta>\n    <instanceID>${newId()}</instanceID>\n  </meta>\n`;
+  if(!T.kids.some(k=>k.name.split(':').pop()==='meta'))body+=`  <meta>\n    <instanceID>${newId()}</instanceID>\n  </meta>\n`;
   return `<?xml version='1.0' ?>\n<${T.name}${a}>\n${body}</${T.name}>\n`}
 
 $('#tpl').onchange=async e=>{const f=e.target.files[0];if(!f)return;
   try{loadTemplate(await f.text());render()}catch(err){T=null;$('#tplStat').innerHTML=`<span class="warn">Could not read the file: ${esc(err.message)}</span>`}};
 $('#old').onchange=async e=>{await loadOld([...e.target.files]);render()};
+const IDRE=/<(?:\w+:)?instanceID>([^<]*)</;
 $('#prev').onclick=()=>{const p=$('#pre');p.hidden=false;p.textContent=record(OLD[0])};
 $('#go').onclick=async()=>{
   const b=$('#go');b.disabled=true;const z=new JSZip(),pre=($('#prefix').value||'submission').replace(/[^\w-]/g,'_'),w=String(OLD.length).length+1;
-  OLD.forEach((o,i)=>z.file(`${pre}_${String(i+1).padStart(w,'0')}.xml`,record(o)));
+  const ids=[],used={};
+  const fname=(o,i)=>{let n=(o.fname||`${pre}_${String(i+1).padStart(w,'0')}`).replace(/\.xml$/i,'').replace(/[^\w.\- ]/g,'_');
+    used[n]=(used[n]||0)+1;return (used[n]>1?`${n}_${used[n]}`:n)+'.xml'};
+  OLD.forEach((o,i)=>{const x=record(o),m=x.match(IDRE);ids.push(m?m[1].trim():'');z.file(fname(o,i),x)});
+  const bad=ids.filter(v=>!/^uuid:[0-9a-f-]{36}$/i.test(v)).length,uniq=new Set(ids).size;
+  if(bad||uniq!==ids.length){$('#outStat').innerHTML=`<span class="warn">Stopped: ${bad} files have a missing or invalid instanceID and ${ids.length-uniq} are repeated. Check that your dummy XML contains a meta/instanceID element.</span>`;b.disabled=false;return}
   const blob=await z.generateAsync({type:'blob'});const a=document.createElement('a');
   a.href=URL.createObjectURL(blob);a.download=pre+'_xml_files.zip';a.click();
-  $('#outStat').innerHTML=`<span class="ok">${OLD.length} XML files created, each with a unique instanceID.</span>`;b.disabled=false};
+  $('#outStat').innerHTML=`<span class="ok">${OLD.length} XML files created. Checked: ${uniq} unique instanceIDs. First: ${esc(ids[0])}</span>`;b.disabled=false};
 </script>
 </body>
 </html>
