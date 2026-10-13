@@ -70,7 +70,8 @@ pre{background:var(--bg);padding:.8rem;border-radius:6px;overflow:auto;max-heigh
 <p class="hint">Files keep the name of the original submission (XML uploads) or its <code>_uuid</code> (CSV/XLSX exports); the prefix below is used only when neither exists. Every file gets the new form ID and version plus a fresh random instanceID, so nothing is flagged as a duplicate.</p>
 <div class="row">
 <input type="text" id="prefix" value="submission" aria-label="File name prefix">
-<button id="go">Download ZIP of XML files</button>
+<label>Files per ZIP <input type="number" id="batch" min="1" value="20" style="width:5rem;padding:.6rem;border:1px solid var(--line);border-radius:6px;background:var(--card);color:var(--ink)"></label>
+<button id="go">Download ZIP file(s)</button>
 <button class="sec" id="prev">Preview first record</button>
 </div>
 <p class="stat" id="outStat"></p>
@@ -167,16 +168,19 @@ $('#old').onchange=async e=>{await loadOld([...e.target.files]);render()};
 const IDRE=/<(?:\w+:)?instanceID>([^<]*)</;
 $('#prev').onclick=()=>{const p=$('#pre');p.hidden=false;p.textContent=record(OLD[0])};
 $('#go').onclick=async()=>{
-  const b=$('#go');b.disabled=true;const z=new JSZip(),pre=($('#prefix').value||'submission').replace(/[^\w-]/g,'_'),w=String(OLD.length).length+1;
+  const b=$('#go');b.disabled=true;const files=[],pre=($('#prefix').value||'submission').replace(/[^\w-]/g,'_'),w=String(OLD.length).length+1;
   const ids=[],used={};
   const fname=(o,i)=>{let n=(o.fname||`${pre}_${String(i+1).padStart(w,'0')}`).replace(/\.xml$/i,'').replace(/[^\w.\- ]/g,'_');
     used[n]=(used[n]||0)+1;return (used[n]>1?`${n}_${used[n]}`:n)+'.xml'};
-  OLD.forEach((o,i)=>{const x=record(o),m=x.match(IDRE);ids.push(m?m[1].trim():'');z.file(fname(o,i),x)});
+  OLD.forEach((o,i)=>{const x=record(o),m=x.match(IDRE);ids.push(m?m[1].trim():'');files.push([fname(o,i),x])});
   const bad=ids.filter(v=>!/^uuid:[0-9a-f-]{36}$/i.test(v)).length,uniq=new Set(ids).size;
   if(bad||uniq!==ids.length){$('#outStat').innerHTML=`<span class="warn">Stopped: ${bad} files have a missing or invalid instanceID and ${ids.length-uniq} are repeated. Check that your dummy XML contains a meta/instanceID element.</span>`;b.disabled=false;return}
-  const blob=await z.generateAsync({type:'blob'});const a=document.createElement('a');
-  a.href=URL.createObjectURL(blob);a.download=pre+'_xml_files.zip';a.click();
-  $('#outStat').innerHTML=`<span class="ok">${OLD.length} XML files created. Checked: ${uniq} unique instanceIDs. First: ${esc(ids[0])}</span>`;b.disabled=false};
+  const size=Math.max(1,parseInt($('#batch').value)||files.length),parts=Math.ceil(files.length/size);
+  for(let p=0;p<parts;p++){const z=new JSZip();files.slice(p*size,(p+1)*size).forEach(([n,x])=>z.file(n,x));
+    const blob=await z.generateAsync({type:'blob'}),a=document.createElement('a');
+    a.href=URL.createObjectURL(blob);a.download=parts>1?`${pre}_part${String(p+1).padStart(2,'0')}_of_${parts}.zip`:pre+'_xml_files.zip';a.click();
+    await new Promise(r=>setTimeout(r,700))}
+  $('#outStat').innerHTML=`<span class="ok">${OLD.length} XML files created in ${parts} ZIP${parts>1?'s':''}. Checked: ${uniq} unique instanceIDs. First: ${esc(ids[0])}</span>`;b.disabled=false};
 </script>
 </body>
 </html>
